@@ -10,7 +10,7 @@ from io import BytesIO
 import logging
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, date
 _logger = logging.getLogger(__name__)
 
 try:
@@ -212,6 +212,7 @@ class AccountMove(models.Model):
         # that happens if you choose the modify option of the credit note
         # wizard. A mapping of which documents can be reported as related
         # documents would be a better solution
+        # invoice_origin es el numero de presupuesto
         if self.l10n_latam_document_type_id.internal_type in ['debit_note', 'credit_note'] \
                 and self.invoice_origin:
             return self.search([
@@ -358,12 +359,11 @@ print "Observaciones:", wscdc.Obs
                     'Point of sale and document number and document type '
                     'are required!'))
             cbte_fch = inv.invoice_date
+
             if not cbte_fch:
                 raise UserError(_('Invoice Date is required!'))
             cbte_fch = cbte_fch.strftime('%Y%m%d')
             imp_total = str("%.2f" % inv.amount_total)
-
-            _logger.info('Constatando Comprobante en afip')
 
             # atrapado de errores en afip
             msg = False
@@ -400,7 +400,7 @@ print "Observaciones:", wscdc.Obs
             # Ignore invoices with cae (do not check date)
             if inv.afip_auth_code:
                 continue
-
+            _logger.info(inv.journal_id.l10n_ar_afip_pos_system)
             if inv.journal_id.l10n_ar_afip_pos_system not in ['RLI_RLM','FEERCEL']:
                 continue
             if inv.journal_id.l10n_ar_afip_pos_system != 'FEERCEL':
@@ -429,14 +429,13 @@ print "Observaciones:", wscdc.Obs
                 })
                 inv.message_post(body=msg)
                 continue
-
+            
             # get the electronic invoice type, point of sale and afip_ws:
             commercial_partner = inv.commercial_partner_id
             country = commercial_partner.country_id
             journal = inv.journal_id
             pos_number = journal.l10n_ar_afip_pos_number
             doc_afip_code = inv.l10n_latam_document_type_id.code
-
             # authenticate against AFIP:
             ws = inv.company_id.get_connection(afip_ws).connect()
 
@@ -477,7 +476,6 @@ print "Observaciones:", wscdc.Obs
             #cbt_desde = cbt_hasta = cbte_nro = inv.invoice_number
             cbt_desde = cbt_hasta = cbte_nro = ws_next_invoice_number
             concepto = tipo_expo = int(inv.l10n_ar_afip_concept)
-
             fecha_cbte = inv.invoice_date
             if afip_ws != 'wsmtxca':
                 fecha_cbte = inv.invoice_date.strftime('%Y%m%d')
@@ -525,9 +523,8 @@ print "Observaciones:", wscdc.Obs
             if not moneda_id:
                 raise ValidationError('No esta definido el codigo AFIP en la moneda')
 
-
             CbteAsoc = inv.get_related_invoices_data()
-
+        
             # create the invoice internally in the helper
             if afip_ws == 'wsfe':
                 inv.l10n_ar_currency_rate = moneda_ctz
@@ -548,7 +545,7 @@ print "Observaciones:", wscdc.Obs
                             importe = str("%.2f" % move_tax.tax_amount)
                             alic = None
                             ws.AgregarTributo(tributo_id, desc, base_imp, alic, importe)
-
+            
             # elif afip_ws == 'wsmtxca':
             #     obs_generales = inv.coment
             #     ws.CrearFactura(
@@ -657,11 +654,25 @@ print "Observaciones:", wscdc.Obs
                     ws.AgregarOpcional(
                         opcional_id=2101,
                         valor=inv.invoice_partner_bank_id.cbu)
+                    # agregamos tipo de transmision si esta definido
+                    transmission_type = self.env['ir.config_parameter'].sudo().get_param('l10n_ar_edi.fce_transmission', 'SCA')
+                    if transmission_type:
+                        ws.AgregarOpcional(
+                            opcional_id=27,
+                            valor=transmission_type)
+                
                 elif int(doc_afip_code) in [202, 203, 207, 208, 212, 213]:
                     valor = inv.afip_fce_es_anulacion and 'S' or 'N'
                     ws.AgregarOpcional(
                         opcional_id=22,
                         valor=valor)
+                    # agregamos tipo de transmision si esta definido
+                    transmission_type = self.env['ir.config_parameter'].sudo().get_param('l10n_ar_edi.fce_transmission', 'SCA')
+                    if transmission_type:
+                        ws.AgregarOpcional(
+                            opcional_id=27,
+                            valor=transmission_type)
+
 
             # TODO ver si en realidad tenemos que usar un vat pero no lo
             # subimos
@@ -691,7 +702,6 @@ print "Observaciones:", wscdc.Obs
                 #        0,
                 #        "%.2f" % tax.amount,
                 #    )
-
             if CbteAsoc:
                 # fex no acepta fecha
                 if afip_ws == 'wsfex':
@@ -709,10 +719,19 @@ print "Observaciones:", wscdc.Obs
                         self.company_id.vat,
                         afip_ws != 'wsmtxca' and self.date.strftime('%Y%m%d') or self.invoice_date.strftime('%Y-%m-%d'),
                     )
+            # Notas de debito
+            if inv.l10n_latam_document_type_id.code in ['2','7','12']:
+                year = date.today().year
+                month = date.today().month
+                day = date.today().day 
+                fecha_desde = str(year) + str(month).zfill(2) + '01'
+                fecha_hasta = str(year) + str(month).zfill(2) + str(day).zfill(2)
+                ws.AgregarPeriodoComprobantesAsociados(fecha_desde,fecha_hasta)
 
             # analize line items - invoice detail
             # wsfe do not require detail
             if afip_ws != 'wsfe':
+                
                 for line in inv.invoice_line_ids:
                     codigo = line.product_id.default_code
                     # unidad de referencia del producto si se comercializa
