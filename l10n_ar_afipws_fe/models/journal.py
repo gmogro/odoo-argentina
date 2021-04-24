@@ -84,11 +84,16 @@ class AccountJournal(models.Model):
     def sync_document_local_remote_number(self):
         if self.type != 'sale':
             return True
-        for journal_document_type in self.journal_document_type_ids:
-            next_by_ws = int(
-                journal_document_type.get_pyafipws_last_invoice(
-                )['result']) + 1
-            journal_document_type.sequence_id.number_next_actual = next_by_ws
+        for sequence in self.l10n_ar_sequence_ids:
+            journal_document_type = sequence.l10n_latam_document_type_id
+            result = journal_document_type.get_pyafipws_last_invoice(None,journal_document_type,self,sequence)
+            next_by_ws = int(result['result']) + 1
+            sequence.number_next = next_by_ws
+        #for journal_document_type in self.journal_document_type_ids:
+        #    next_by_ws = int(
+        #        journal_document_type.get_pyafipws_last_invoice(
+        #        )['result']) + 1
+        #    journal_document_type.sequence_id.number_next_actual = next_by_ws
 
     def check_document_local_remote_number(self):
         msg = ''
